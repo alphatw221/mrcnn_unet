@@ -6,125 +6,93 @@ import math
 import os
 #%%
 class MyDataset():
-    
-    def __init__(self,imageDir,annoList,classDict):
-        self.imageDir=imageDir
-        self.annoList=annoList
-        self.classDict=classDict
-        self.numOfImages = len(annoList)
-        self._image_ids=self._getImageIdArray()
-
-    def _getImageIdArray(self):
-        emptyArray=[]
-        for i in range(self.numOfImages):
-            id=self.annoList[i]["imageInfo"]["id"]
-            emptyArray.append(id)
-        return np.array(emptyArray)
-
-    @property
-    def image_ids(self):
-        return self._image_ids
+    def __init__(self,datasetDir, classDict, instanceClasses):
+        self.imageDir = os.path.join(datasetDir,'image')
+        imageFileName = os.listdir(self.imageDir)
+        self.imagePath = [os.path.join(self.imageDir, fileName) for fileName in imageFileName]
+        self.labelDir=os.path.join(datasetDir,'label')
+        labelFileName = os.listdir(self.labelDir)
+        self.labelPath = [os.path.join(self.labelDir, labelName) for labelName in labelFileName]
+        self.classDict = classDict
+        self.numOfImages = len(os.listdir(self.imageDir))
+        self.image_ids = range(self.numOfImages)
+        self.instanceClasses = instanceClasses
 
     def load_image(self,imageId):
-        path=os.path.join(self.imageDir,self.annoList[imageId]["imageInfo"]["fileName"])
-        return plt.imread(path)  #TODO Cropping
+        return plt.imread(self.imagePath[imageId])  #TODO Cropping
 
     def load_mask(self,imageId):
-        imageInfo=self.annoList[imageId]["imageInfo"]
-        annos=self.annoList[imageId]["annos"]
-        numOfAnno=len(annos)
-        mask=np.zeros((imageInfo["height"],imageInfo["width"],numOfAnno),np.uint8)  
+        labelImage = cv2.imread(self.labelPath[imageId])
+        labelImage = cv2.cvtColor(labelImage, cv2.COLOR_BGR2RGB)
         
-        tempArray=[]
-        for i in range(numOfAnno):
-            tempArray.append(annos[i]["classId"])
-            tempMask=np.zeros((imageInfo["height"],imageInfo["width"]),np.uint8)
-            cv2.fillPoly(tempMask,[annos[i]["xy"]],(1))
-            mask[:,:,i]=tempMask
-        class_ids=np.array(tempArray)
+        mask = np.ones((labelImage.shape[0], labelImage.shape[1],1), np.bool)
+        class_ids = [0]
+        for class_id in range(1, len(self.instanceClasses)+1):
+            hexDecimal = self.classDict[self.instanceClasses[class_id-1]].lstrip('#')
+            rgb = tuple(int(hexDecimal[i:i+2], 16) for i in (0, 2, 4))
+            
+            classMask = (labelImage[:,:,0]==rgb[0])*(labelImage[:,:,1]==rgb[1])*(labelImage[:,:,2]==rgb[2])
+            num_objects, objectIdMask = cv2.connectedComponents(classMask.astype('uint8'))
+            num_objects-=1
+            if num_objects:
+                objectsMask = np.zeros((classMask.shape[0], classMask.shape[1], num_objects), np.bool)
+                for i in range(num_objects):
+                    objectsMask[:,:,i] = (objectIdMask==i+1)
+                    class_ids.append(class_id)
+                mask = np.concatenate((mask, objectsMask),axis = 2)
+            
+            
         #去重疊
         occlusion = np.logical_not(mask[:, :, -1]).astype(np.uint8)
-        for i in range(numOfAnno-2, -1, -1):
+        for i in range(len(class_ids)-2, -1, -1):
             mask[:, :, i] = mask[:, :, i] * occlusion
             occlusion = np.logical_and(occlusion, np.logical_not(mask[:, :, i]))
-        return mask.astype(np.bool), class_ids.astype(np.int32)  #TODO Cropping
-
-    def load_u_net_mask(self,imageId):
-        imageInfo=self.annoList[imageId]["imageInfo"]
-        annos=self.annoList[imageId]["annos"]
-        mask=np.zeros((imageInfo["height"],imageInfo["width"],len(self.classDict)),np.uint8)
-        for anno in annos:
-            tempMask=np.zeros((imageInfo["height"],imageInfo["width"]),np.uint8)
-            cv2.fillPoly(tempMask,[anno["xy"]],(1))
-            mask[:,:,anno["classId"]]+=tempMask
-        return mask.astype(np.bool)  #TODO Cropping
-
-#----------------------------------------------------------------------------------------------------------------------
-
-def buildVIA_Anno(imageDir,CSV_path,classDict,shuffle=True,splitRate=0.9):
-    import csv
+        # return mask.astype(np.bool), class_ids.astype(np.int32)  #TODO Cropping
+        return mask.astype(np.uint8), np.array(class_ids, dtype = np.int32)
     
-    data=[]
-    indexDict={}
-
-    with open(CSV_path, "r") as f:
-        reader = csv.reader(f, delimiter=",")
-        for line in reader: 
-            if '#' in line[0][0]:
-                continue
-            fileName = line[1][2:-2]
-            xy=np.array(line[4].strip('][').split(',')[1:]).reshape((-1,2)).astype(np.float).round().astype(int)
-            metaData = line[5].strip('}{').split(':')
-            classId=0 if not metaData[0] else int(metaData[1].strip('"'))
-
-            if fileName not in indexDict:
-                img=plt.imread(os.path.join(imageDir,fileName))
-                obj={"imageInfo":{
-                        "id": len(data),
-                        "width": img.shape[1],
-                        "height": img.shape[0],
-                        "channel":img.shape[2],
-                        "fileName": fileName
-                    },"annos":[]}
-                indexDict[fileName]=len(data)
-                data.append(obj)
-
-            anno={"classId":classId,"className":classDict[classId],"xy":xy}
-            data[indexDict[fileName]]["annos"].append(anno)
+    def load_u_net_mask(self,imageId):
+        
+        labelImage = cv2.imread(self.labelPath[imageId])
+        labelImage = cv2.cvtColor(labelImage, cv2.COLOR_BGR2RGB)
+        
+        mask = np.zeros((labelImage.shape[0],labelImage.shape[1],len(self.classDict)),np.bool)
+        i = 0
+        for key in self.classDict:
+            hexDecimal = self.classDict[key].lstrip('#')
+            rgb = tuple(int(hexDecimal[i:i+2], 16) for i in (0, 2, 4))
             
-    if shuffle:
-        pass
-        #TODO shuffle
-    separateIndex=math.floor(len(data)*splitRate)
-    return data[:separateIndex],data[separateIndex:]
+            mask[:,:,i] = (labelImage[:,:,0]==rgb[0])*(labelImage[:,:,1]==rgb[1])*(labelImage[:,:,2]==rgb[2])
+            i+=1
+            
+        return mask  #TODO Cropping
+
+
 
 #%%
-imageDir=r"C:\Users\tnt\Desktop\spk_env\imageDir"
-VIA_csvPath=r"C:\Users\tnt\Desktop\spk_env\mask.csv"
-classDict={0:'eye',1:'spk'}
-trainAnnoList,valAnnoList=buildVIA_Anno(imageDir,VIA_csvPath,classDict,shuffle=True,splitRate=0.9)
-
-# %%
-trainData=MyDataset(imageDir,trainAnnoList,classDict)
+datasetDir=r"C:\Users\tnt\Desktop\dataset"
+classDict={'flour':'#FF0000', 'patch':'#0000FF', 'glueAndFillement':'#FF00FF', 'outOfFocus':'#00FFFF'}
+instanceClasses=['patch', 'glueAndFillement', 'outOfFocus']
+#           classID    1         2            3
+trainData=MyDataset(datasetDir, classDict, instanceClasses)
 #%%
-unet_mask=trainData.load_u_net_mask(50)
-um=unet_mask.astype(np.uint8)
-for i in range(2):
-    test=um[:,:,i]
-    plt.imshow(test*256)
-    plt.show()
+# unet_mask=trainData.load_u_net_mask(0)
+# um=unet_mask.astype(np.uint8)
+# for i in range(4):
+#     test=um[:,:,i]
+#     plt.imshow(test*256)
+#     plt.show()
 #%%
-image_ids=trainData.image_ids
-image=trainData.load_image(50)
-plt.imshow(image)
-plt.show()
+# image_ids=trainData.image_ids
+# image=trainData.load_image(50)
+# plt.imshow(image)
+# plt.show()
 #%%
-mask,class_ids=trainData.load_mask(50)
-m=mask.astype(np.uint8)
+mask,class_ids=trainData.load_mask(2)
 for i in range(len(class_ids)):
-    test=m[:,:,i]
+    test=mask[:,:,i]
     plt.imshow(test*256)
     plt.show()
+    print(class_ids)
 
 
 #%%

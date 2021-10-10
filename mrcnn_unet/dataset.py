@@ -42,6 +42,14 @@ class MyDataset():
         return plt.imread(path)[28:28+1024,163:163+1024,:]  #TODO Cropping
 
     def load_mask(self,imageId):
+
+
+
+        #這裡要想辦法把物件分離
+
+
+
+        
         imageInfo=self.annoList[imageId]["imageInfo"]
         annos=self.annoList[imageId]["annos"]
         numOfAnno=len(annos)
